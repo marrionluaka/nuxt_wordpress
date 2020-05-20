@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  proxy:
+    image: traefik:v2.1
+    ports:
+      # The HTTP port
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    command: 
+      - --api.insecure=true
+      ## Providers
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=web
+      ## Entrypoints
+      - --entrypoints.app.address=:80
+      - --entrypoints.app-secured.address=:443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - web
+    labels:
+      - "traefik.docker.network=web"
+
+  mysql:
+    container_name: mysql
+    image: mysql:5.7
+    volumes:
+      - db_data:/var/lib/mysql
+    restart: always
+    env_file: ./env/db.env
+    networks:
+      - backend
+
+  wordpress:
+    container_name: wordpress
+    depends_on:
+      - mysql
+    build: ./wordpress
+    restart: always
+    expose: 
+      - 80
+    env_file: ./env/wp.env
+    volumes:
+      - ./wordpress:/var/www/html
+      - ./wordpress/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+    labels:
+      - "traefik.enable=true"
+      ## Http settings
+      - "traefik.http.routers.wp.rule=PathPrefix(`/wp{[a-z-_*]}`)"
+      - "traefik.http.routers.wp.entrypoints=app"
+      ## Https settings
+      - "traefik.http.routers.wp-secured.entrypoints=app-secured"
+      - "traefik.http.routers.wp-secured.rule=PathPrefix(`/wp{[a-z-_*]}`)"
+      ## Configuring middleware
+      - "traefik.http.routers.wp-secured.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+    volumes:
+      - ./wordpress:/var/www/html
+      - ./wordpress/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+    networks:
+      - web
+      - backend
+
+  blog:
+    container_name: blog
+    depends_on:
+      - wordpress
+    build:
+      context: ./blog
+      dockerfile: Dockerfile
+      target: development
+    healthcheck:
+      test: exit 0
+    volumes:
+      - /app/node_modules
+      - ./blog:/app
+    environment:
+      API_URL: http://wordpress:80/
+      NODE_ENV: development
+    labels:
+      - "traefik.enable=true"
+      ## Http settings
+      - "traefik.http.routers.blog.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.blog.entrypoints=app"
+      ## Https settings
+      - "traefik.http.routers.blog-secured.entrypoints=app-secured"
+      - "traefik.http.routers.blog-secured.rule=PathPrefix(`/`)"
+      ## Configuring middleware
+      - "traefik.http.routers.blog-secured.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+    networks:
+      - web
+
+volumes:
+  db_data: {}
+
+networks:
+  web:
+    external: true
+  backend:
+    external: false
